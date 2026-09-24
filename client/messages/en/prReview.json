@@ -28,6 +28,8 @@
   },
   "panel": {
     "hideLowConfidence": "Hide low confidence",
+    "severityCounters": "Findings by severity",
+    "severityFilters": "Filter findings by severity",
     "noMatchTitle": "No findings match",
     "noMatchBody": "Adjust the filters above, or run a review to generate findings."
   },
@@ -91,10 +93,13 @@
       "author": "Author",
       "size": "Size",
       "score": "Score",
+      "findings": "Findings",
       "status": "Status",
       "cost": "Cost",
       "updated": "Updated"
     },
+    "findingsBySeverity": "{count} {severity} findings — show them on this pull request",
+    "findingsPreviewTitle": "{count, plural, one {# finding in this run} other {# findings in this run}}",
     "filesCount": "{count} files",
     "errorTitle": "Couldn’t load pull requests",
     "errorBody": "The engine returned an error.",
@@ -105,6 +110,7 @@
   "timeline": {
     "goToReview": "Jump to this run’s findings below",
     "openTrace": "Open run trace & logs",
-    "deleteRun": "Delete run"
+    "deleteRun": "Delete run",
+    "findingsPreviewTitle": "{count, plural, one {# finding in this run} other {# findings in this run}}"
   }
 }

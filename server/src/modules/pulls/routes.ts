@@ -7,7 +7,7 @@ import * as t from '../../db/schema.js';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { AppError, NotFoundError } from '../../platform/errors.js';
-import { deriveReviewStatus } from './status.js';
+import { deriveReviewStatus, rollupSeverities, type SeverityCounts } from './status.js';
 
 /**
  * F1 — pulls module. PR import via Octokit (list + per-PR detail).
@@ -111,38 +111,84 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
       }
     }
 
-    // Latest-review SCORE per PR for the list's score ring. Computed on read
-    // from reviews (no FK denorm); the list is small, so one IN-query + JS
-    // grouping is cheap. (The per-severity FINDINGS breakdown is intentionally
-    // not surfaced on the list — findings live on the PR detail page.)
+    // Latest-review SCORE and per-severity FINDINGS counts per PR. Computed on
+    // read from reviews (no FK denorm); the list is small, so one IN-query + JS
+    // grouping is cheap.
+    //
+    // The two differ in WHICH reviews they read. The score ring shows the single
+    // latest review. The findings breakdown covers each agent's latest review,
+    // so a PR three agents looked at shows the union of what they currently
+    // flag — reading only the newest would hide the other two agents' findings,
+    // and reading every review would count superseded re-runs twice.
     const prIds = rows.map((r) => r.id);
     const latestReviewByPr = new Map<string, { score: number | null }>();
+    const countedReviewToPr = new Map<string, string>();
     if (prIds.length > 0) {
       const reviewRows = await container.db
-        .select({ prId: t.reviews.prId, score: t.reviews.score })
+        .select({
+          id: t.reviews.id,
+          prId: t.reviews.prId,
+          agentId: t.reviews.agentId,
+          score: t.reviews.score,
+        })
         .from(t.reviews)
         .where(and(inArray(t.reviews.prId, prIds), eq(t.reviews.kind, 'review')))
         .orderBy(desc(t.reviews.createdAt));
-      // Rows are newest-first → first seen per PR is the latest review.
+      // Rows are newest-first → first seen per PR (resp. per PR+agent) wins.
+      const seenPrAgent = new Set<string>();
       for (const rv of reviewRows) {
         if (!latestReviewByPr.has(rv.prId)) latestReviewByPr.set(rv.prId, { score: rv.score });
+        const agentKey = `${rv.prId}|${rv.agentId ?? 'none'}`;
+        if (!seenPrAgent.has(agentKey)) {
+          seenPrAgent.add(agentKey);
+          countedReviewToPr.set(rv.id, rv.prId);
+        }
       }
     }
 
-    // Latest-run COST per PR — the money pair to the score ring above, and the
-    // same shape: one IN-query, newest-first, first row per PR wins. Only
-    // settled runs carry a cost (failed/cancelled ones persist null), so the
-    // column answers "what did the last review of this PR cost me".
-    const latestCostByPr = new Map<string, number | null>();
+    // Severity tally per PR over those reviews' findings. Dismissed findings are
+    // included, matching the counter chips on the PR detail page.
+    const findingsCountsByPr = new Map<string, SeverityCounts>();
+    const countedReviewIds = [...countedReviewToPr.keys()];
+    if (countedReviewIds.length > 0) {
+      const findingRows = await container.db
+        .select({ reviewId: t.findings.reviewId, severity: t.findings.severity })
+        .from(t.findings)
+        .where(inArray(t.findings.reviewId, countedReviewIds));
+      const byPr = new Map<string, { severity: string }[]>();
+      for (const f of findingRows) {
+        const prId = countedReviewToPr.get(f.reviewId);
+        if (!prId) continue;
+        const bucket = byPr.get(prId);
+        if (bucket) bucket.push(f);
+        else byPr.set(prId, [f]);
+      }
+      // Every reviewed PR gets counts, so "reviewed, found nothing" reads as
+      // three zeroes rather than the em dash that means "never reviewed".
+      for (const prId of new Set(countedReviewToPr.values())) {
+        findingsCountsByPr.set(prId, rollupSeverities(byPr.get(prId) ?? []));
+      }
+    }
+
+    // TOTAL COST per PR — what every successful review of this PR has cost so
+    // far, summed. Only `done` runs carry a cost (failed/cancelled ones persist
+    // null), so the column answers "what has this PR cost me".
+    //
+    // A PR with no settled run is absent from the map and reports null, which
+    // the UI shows as an em dash: "never reviewed" is not "$0". A run whose
+    // model has no known pricing contributes nothing rather than poisoning the
+    // whole total — the alternative, propagating null, would blank the column
+    // for the entire PR because one agent used an unpriced model.
+    const totalCostByPr = new Map<string, number>();
     if (prIds.length > 0) {
       const runRows = await container.db
         .select({ prId: t.agentRuns.prId, costUsd: t.agentRuns.costUsd })
         .from(t.agentRuns)
-        .where(and(inArray(t.agentRuns.prId, prIds), eq(t.agentRuns.status, 'done')))
-        .orderBy(desc(t.agentRuns.ranAt));
+        .where(and(inArray(t.agentRuns.prId, prIds), eq(t.agentRuns.status, 'done')));
       for (const run of runRows) {
         // prId is nullable (agent_runs.pr_id is ON DELETE SET NULL).
-        if (run.prId && !latestCostByPr.has(run.prId)) latestCostByPr.set(run.prId, run.costUsd);
+        if (!run.prId) continue;
+        totalCostByPr.set(run.prId, (totalCostByPr.get(run.prId) ?? 0) + (run.costUsd ?? 0));
       }
     }
 
@@ -170,7 +216,8 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
         opened_at: r.openedAt?.toISOString() ?? null,
         updated_at: r.updatedAt?.toISOString() ?? null,
         score: review ? review.score : null,
-        cost_usd: latestCostByPr.get(r.id) ?? null,
+        cost_usd: totalCostByPr.get(r.id) ?? null,
+        findings_counts: findingsCountsByPr.get(r.id) ?? null,
       };
     });
   });

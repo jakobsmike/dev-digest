@@ -25,7 +25,7 @@ export const SIZE_COLOR: Record<string, string> = {
 
 /** Grid template for both the header row and PR rows. Track count must stay in
  *  sync with COLUMN_KEYS below — a mismatch silently skews the whole table. */
-export const GRID = "1fr 132px 92px 60px 118px 76px 78px";
+export const GRID = "1fr 132px 92px 60px 132px 118px 76px 78px";
 
 /** Line-count thresholds for the S/M/L size bucket. */
 export const SIZE_SMALL_MAX = 100;
@@ -45,10 +45,20 @@ export const COLUMN_KEYS: string[] = [
   "author",
   "size",
   "score",
+  "findings",
   "status",
   "cost",
   "updated",
 ];
+
+/** Severities shown in the FINDINGS column, severest first. Mirrors the
+ *  `Severity` contract enum — the design system's extra `INFO` never appears
+ *  because the server cannot produce it. */
+export const FINDINGS_SEVERITIES = [
+  { key: "critical", sev: "CRITICAL" },
+  { key: "warning", sev: "WARNING" },
+  { key: "suggestion", sev: "SUGGESTION" },
+] as const;
 
 /** Number of skeleton rows shown while loading. */
 export const SKELETON_ROWS = 4;

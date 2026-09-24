@@ -132,7 +132,7 @@ d('Testcontainers: DB-backed routes via app.inject', () => {
     await app.close();
   });
 
-  it('GET /repos/:id/pulls reports the cost of each PR’s LATEST run', async () => {
+  it('GET /repos/:id/pulls totals the cost of every successful run on a PR', async () => {
     const config = loadConfig({ ...process.env, NODE_ENV: 'test' } as NodeJS.ProcessEnv);
     // Two PRs: one we run agents on, one nobody touches. The default mock ships
     // a single PR, so the second is spelled out here.
@@ -173,27 +173,129 @@ d('Testcontainers: DB-backed routes via app.inject', () => {
       .from(t.repos)
       .where(eq(t.repos.id, repoId));
 
-    // Two settled runs on the same PR, the dearer one OLDER — so a sum (0.75)
-    // and a max (0.50) would both differ from the expected latest (0.25).
-    const run = (ranAt: Date, costUsd: number) => ({
+    // Three runs on the same PR. The total (0.75) differs from the latest
+    // (0.25) and from the max (0.50), so picking one run instead of summing
+    // fails here. The failed run is dearer than either and must be ignored
+    // entirely — only successful runs count.
+    const run = (ranAt: Date, costUsd: number | null, status = 'done') => ({
       workspaceId: repoRow!.workspaceId,
       prId: target.id,
       ranAt,
-      status: 'done',
+      status,
       costUsd,
     });
     await pg.handle.db.insert(t.agentRuns).values([
       run(new Date('2026-06-10T10:00:00Z'), 0.5),
       run(new Date('2026-06-11T10:00:00Z'), 0.25),
+      run(new Date('2026-06-12T10:00:00Z'), 9.0, 'failed'),
     ]);
 
     const after: { id: string; cost_usd: number | null }[] = (
       await app.inject({ method: 'GET', url: `/repos/${repoId}/pulls` })
     ).json();
     const byId = (id: string) => after.find((p) => p.id === id)!;
-    expect(byId(target.id).cost_usd).toBeCloseTo(0.25, 10);
+    expect(byId(target.id).cost_usd).toBeCloseTo(0.75, 10);
     // A PR nobody has run an agent on has no cost at all — not zero.
     expect(byId(untouched.id).cost_usd).toBeNull();
+
+    await app.close();
+  });
+
+  it('GET /repos/:id/pulls counts findings per severity, unioning agents without double-counting', async () => {
+    const config = loadConfig({ ...process.env, NODE_ENV: 'test' } as NodeJS.ProcessEnv);
+    const pr = (number: number, title: string): PrMeta => ({
+      number,
+      title,
+      author: 'marisa.koch',
+      branch: `feat/${number}`,
+      base: 'main',
+      head_sha: `sha-${number}`,
+      additions: 10,
+      deletions: 1,
+      files_count: 2,
+      status: 'open',
+      opened_at: '2026-06-01T00:00:00Z',
+      updated_at: '2026-06-01T03:00:00Z',
+    });
+    const app = await buildApp({
+      config,
+      db: pg.handle.db,
+      overrides: {
+        git: new MockGitClient(),
+        github: new MockGitHubClient({
+          pulls: [pr(911, 'two agents, one re-run'), pr(912, 'never reviewed')],
+        }),
+      },
+    });
+    const repos = await app.inject({ method: 'GET', url: '/repos' });
+    const repoId = repos.json()[0]!.id;
+    const pulls: { id: string; number: number }[] = (
+      await app.inject({ method: 'GET', url: `/repos/${repoId}/pulls` })
+    ).json();
+    const target = pulls.find((p) => p.number === 911)!;
+    const untouched = pulls.find((p) => p.number === 912)!;
+
+    const [repoRow] = await pg.handle.db.select().from(t.repos).where(eq(t.repos.id, repoId));
+    const workspaceId = repoRow!.workspaceId;
+    const [agentA, agentB] = await pg.handle.db
+      .insert(t.agents)
+      .values([
+        { workspaceId, name: 'Agent A', provider: 'openai', model: 'gpt-4.1', systemPrompt: 'a' },
+        { workspaceId, name: 'Agent B', provider: 'openai', model: 'gpt-4.1', systemPrompt: 'b' },
+      ])
+      .returning();
+
+    const review = async (agentId: string, createdAt: Date) => {
+      const [row] = await pg.handle.db
+        .insert(t.reviews)
+        .values({
+          workspaceId,
+          prId: target.id,
+          agentId,
+          kind: 'review',
+          verdict: 'request_changes',
+          summary: 's',
+          createdAt,
+        })
+        .returning();
+      return row!.id;
+    };
+    const finding = (reviewId: string, severity: string, title: string) => ({
+      reviewId,
+      severity,
+      category: 'bug',
+      title,
+      file: 'src/a.ts',
+      startLine: 1,
+      endLine: 1,
+      rationale: 'r',
+      confidence: 0.9,
+    });
+
+    // Agent A reviewed twice. Only its LATEST review counts, so the superseded
+    // one's findings must not be added on top.
+    const aStale = await review(agentA!.id, new Date('2026-06-10T10:00:00Z'));
+    const aLatest = await review(agentA!.id, new Date('2026-06-11T10:00:00Z'));
+    const b = await review(agentB!.id, new Date('2026-06-11T11:00:00Z'));
+    await pg.handle.db.insert(t.findings).values([
+      finding(aStale, 'CRITICAL', 'superseded — must not be counted'),
+      finding(aStale, 'CRITICAL', 'superseded too'),
+      finding(aLatest, 'CRITICAL', 'a-crit'),
+      finding(aLatest, 'WARNING', 'a-warn'),
+      finding(b, 'WARNING', 'b-warn'),
+      finding(b, 'SUGGESTION', 'b-sugg'),
+    ]);
+
+    const after: { id: string; findings_counts: Record<string, number> | null }[] = (
+      await app.inject({ method: 'GET', url: `/repos/${repoId}/pulls` })
+    ).json();
+    const byId = (id: string) => after.find((p) => p.id === id)!;
+
+    // Union of both agents' latest reviews: 1 critical + 2 warnings + 1 suggestion.
+    // The stale review's 2 criticals are excluded.
+    expect(byId(target.id).findings_counts).toEqual({ critical: 1, warning: 2, suggestion: 1 });
+    // Never reviewed is null, not three zeroes — the UI shows an em dash for it.
+    expect(byId(untouched.id).findings_counts).toBeNull();
 
     await app.close();
   });

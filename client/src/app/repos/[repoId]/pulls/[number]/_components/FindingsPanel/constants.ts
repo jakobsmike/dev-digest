@@ -8,6 +8,10 @@ export const SEVERITY_ORDER: Record<string, number> = {
   INFO: 3,
 };
 
+/** The three severities the server can produce, severest first. The design
+ *  system's fourth value (INFO) is deliberately absent — no agent emits it. */
+export const FILTER_SEVERITIES = ["CRITICAL", "WARNING", "SUGGESTION"] as const;
+
 /** Confidence below this is hidden when "hide low confidence" is on. */
 export const LOW_CONFIDENCE_THRESHOLD = 0.65;
 
