@@ -56,7 +56,8 @@ on roles and text. See `../TESTING.md`.
 
 ## Read when
 
-- Adding a route or page → `README.md` § UI route map.
+- Adding a route or page → `README.md` § UI route map and `docs/ui-architecture.md`.
+- Changing what a screen must show → `specs/pages.md` (what must stay true).
 - Fetching data, streaming a run, or invalidating a query → `docs/data-fetching.md`.
 - Reaching for a UI primitive → `src/vendor/ui/README.md` (the design system documents itself).
 - Changing a request/response shape → `../docs/contracts.md`.

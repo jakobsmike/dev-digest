@@ -41,7 +41,8 @@ needing a real provider does not belong here.
 
 ## Read when
 
-- Changing the pipeline or the exported API → `README.md`.
+- Changing the pipeline or the exported API → `README.md`, then `docs/pipeline.md`.
+- Touching grounding or scoring → `specs/grounding.md` (what must stay true).
 - Changing what the model sees, or section order → `../docs/agent-prompts/README.md`.
 - Changing a `Review` / `Finding` shape → `../docs/contracts.md` (the schema lives in the
   server's `vendor/shared`).
