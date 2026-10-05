@@ -130,6 +130,9 @@ export function FindingsTab({
           </SectionLabel>
           <RunHistory
             runs={prRuns ?? []}
+            // `runs` here really is ReviewRecord[] — see the prop docs on
+            // RunHistory. The names read swapped; they are not.
+            reviews={runs}
             commits={prCommits}
             onOpenTrace={handleOpenTrace}
             onGoToReview={handleGoToReview}

@@ -2,9 +2,11 @@
 
 import React from "react";
 import { useTranslations } from "next-intl";
-import { Badge, Icon, CircularScore, type IconName } from "@devdigest/ui";
-import type { RunSummary, PrCommit } from "@devdigest/shared";
+import { Badge, Icon, CircularScore, SeverityBadge, type IconName, type Severity } from "@devdigest/ui";
+import type { RunSummary, PrCommit, ReviewRecord, FindingRecord } from "@devdigest/shared";
 import { formatCost } from "@/lib/cost";
+import { FindingsPreviewCard, anchorTo } from "@/components/findings-preview";
+import { severityCounts } from "../FindingsPanel/helpers";
 
 /**
  * PR timeline — every agent run interleaved with the PR's commits, newest-first
@@ -87,12 +89,17 @@ function tsOf(s: string | null | undefined): number {
 
 export function RunHistory({
   runs,
+  reviews = [],
   commits = [],
   onOpenTrace,
   onGoToReview,
   onDelete,
 }: {
   runs: RunSummary[];
+  /** Reviews these runs produced, matched by `run_id` — the source of the
+   *  per-severity chips and the hover preview. Beware: `runs` above are the run
+   *  ROWS; this is the review records. FindingsTab names them the other way. */
+  reviews?: ReviewRecord[];
   commits?: PrCommit[];
   /** Open the trace + log drawer for a run (the logs icon). */
   onOpenTrace: (runId: string) => void;
@@ -101,6 +108,22 @@ export function RunHistory({
   onDelete?: (runId: string) => void;
 }) {
   const t = useTranslations("prReview");
+  // Hovered run's findings + where to put the card. One at a time: the pointer
+  // can only be over one row.
+  const [preview, setPreview] = React.useState<{
+    runId: string;
+    top: number;
+    left: number;
+  } | null>(null);
+
+  const findingsByRun = React.useMemo(() => {
+    const m = new Map<string, FindingRecord[]>();
+    for (const r of reviews) {
+      if (r.run_id) m.set(r.run_id, r.findings);
+    }
+    return m;
+  }, [reviews]);
+
   if (runs.length === 0 && commits.length === 0) return null;
 
   const items: TimelineItem[] = [
@@ -150,6 +173,8 @@ export function RunHistory({
         const r = item.run;
         const o = outcomeOf(r);
         const settled = r.status === "done";
+        const runFindings = findingsByRun.get(r.run_id) ?? [];
+        const counts = severityCounts(runFindings);
         return (
           <div key={`run:${r.run_id}`} style={rowStyle}>
             <Badge color={o.color} bg={o.bg} icon={o.icon}>
@@ -190,8 +215,23 @@ export function RunHistory({
                 </div>
               )}
               {settled && (
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  {t("runStatus.findings", { count: r.findings_count ?? 0 })}
+                <div
+                  style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-muted)" }}
+                  onMouseEnter={(e) =>
+                    runFindings.length > 0 &&
+                    setPreview({ runId: r.run_id, ...anchorTo(e.currentTarget) })
+                  }
+                  onMouseLeave={() => setPreview(null)}
+                >
+                  {counts.length > 0 ? (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      {counts.map(([sev, n]) => (
+                        <SeverityBadge key={sev} severity={sev as Severity} count={n} compact />
+                      ))}
+                    </span>
+                  ) : (
+                    t("runStatus.findings", { count: r.findings_count ?? 0 })
+                  )}
                   {(r.blockers ?? 0) > 0 ? t("runStatus.blockers", { count: r.blockers ?? 0 }) : ""}
                 </div>
               )}
@@ -221,6 +261,14 @@ export function RunHistory({
               >
                 <Icon.Trash size={13} />
               </span>
+            )}
+            {preview?.runId === r.run_id && (
+              <FindingsPreviewCard
+                findings={runFindings}
+                title={t("timeline.findingsPreviewTitle", { count: runFindings.length })}
+                top={preview.top}
+                left={preview.left}
+              />
             )}
           </div>
         );
