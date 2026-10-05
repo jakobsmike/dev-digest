@@ -18,6 +18,8 @@ screen.
 **Cause:** `reviewPullRequest` merges the partials, then overwrites the result with
 `score: scoreFromFindings(ground.kept)`, recomputed from the findings that survived
 grounding. The merged mean exists only between those two statements.
+**Evidence:** `reviewer-core/src/review/run.ts:216` overwrites the merged score with
+`scoreFromFindings` (`reviewer-core/src/review/reduce.ts:27`).
 **Rule:** the score is a deterministic function of the surviving findings
 (`SEVERITY_PENALTY` in `review/reduce.ts`). To change the number, change those penalties.
 → promoted to `CLAUDE.md` § Invariants
@@ -28,5 +30,6 @@ grounding. The merged mean exists only between those two statements.
 `@devdigest/shared` (or the reverse), with no change to the import.
 **Cause:** the alias into `../server/src/vendor/shared` exists twice — `tsconfig.json`
 `paths` for the compiler, `vitest.config.ts` `resolve.alias` for the runner. Independent.
+**Evidence:** `reviewer-core/tsconfig.json:22` and `reviewer-core/vitest.config.ts:9`.
 **Rule:** change both in the same commit. Same duplication for the server's
 `@devdigest/reviewer-core` alias.
