@@ -53,6 +53,8 @@ in routes.
 ## Read when
 
 - Adding a route or a module → `README.md` (§ Request & DI flow, § API map) and `docs/modules.md`.
+- Understanding the container, adapters or one request end to end → `docs/architecture.md`.
+- Changing anything in the review cycle → `specs/review-flow.md` (what must stay true).
 - Touching the indexer → `src/modules/repo-intel/README.md`.
 - Touching prompt assembly, grounding or the LLM call → `../reviewer-core/CLAUDE.md`.
 - Changing the schema → `docs/db.md`, then `pnpm db:generate`.

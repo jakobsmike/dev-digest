@@ -40,6 +40,6 @@ Prefer `npm run e2e:hermetic` (`../scripts/e2e.sh`): isolated Postgres and stack
 
 ## Read when
 
-- Writing or changing a flow → `README.md`.
-- Deciding whether a case belongs here at all → `../TESTING.md` § philosophy.
+- Writing or changing a flow → `README.md`, then `docs/flows.md`.
+- Deciding whether a case belongs here at all → `specs/coverage.md`, `../TESTING.md` § philosophy.
 - The UI under a flow changed → `../client/CLAUDE.md`.

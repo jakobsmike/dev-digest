@@ -7,5 +7,9 @@ by `run.ts`) and cannot hold prose.
 - **Feature specs** — planned flows, named `spec-<name>.md`, deleted once the flow ships.
   Format: `../../specs/README.md`.
 
-Empty for now. Flow format and env knobs: `../README.md`. Suite strategy:
-`../../TESTING.md`.
+Contents:
+
+- `flows.md` — the execution model, how to write a flow that does not rot, and how to
+  debug one when it breaks.
+
+Flow format and env knobs: `../README.md`. Suite strategy: `../../TESTING.md`.
