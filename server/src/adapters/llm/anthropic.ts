@@ -32,18 +32,56 @@ function splitSystem(messages: ChatMessage[]): {
 }
 
 /**
+ * Newer Anthropic models carry a tier-first id (`claude-opus-5-5`) and reject
+ * `temperature` outright — 400 "`temperature` is deprecated for this model".
+ * The previous generation (`claude-3-5-sonnet-latest`, `claude-3-opus-latest`)
+ * still accepts it, and a deterministic 0 is what keeps a re-review of the same
+ * diff stable, so keep sending it there. Same shape as `tuningParams` in the
+ * OpenAI adapter, which has this problem with GPT-5 and the o-series.
+ */
+function rejectsTemperature(model: string): boolean {
+  return /^claude-(opus|sonnet|haiku)-\d/.test(model);
+}
+
+/** Temperature param appropriate for the model — `{}` when it refuses one. */
+function tuningParams(model: string, temperature: number | undefined): Record<string, number> {
+  return rejectsTemperature(model) ? {} : { temperature: temperature ?? 0 };
+}
+
+/**
+ * Pull the structured payload out of a response.
+ *
+ * The tool call is the expected shape, but `tool_choice: auto` lets the model
+ * answer in prose instead, so fall back to the text blocks: models asked for
+ * JSON usually produce it, sometimes fenced. `parseWithRepair` handles the
+ * fencing; this only has to find the candidate string.
+ */
+export function structuredPayload(content: Anthropic.ContentBlock[]): string {
+  const toolUse = content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+  if (toolUse) return JSON.stringify(toolUse.input);
+  return content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('')
+    .trim();
+}
+
+/**
  * Anthropic LLMProvider.
  * - listModels: dynamic via GET /models.
- * - completeStructured: FORCED tool-use (single tool, input_schema = our JSON
- *   schema, tool_choice forces it), parse tool_use.input, Zod validate + reprompt.
+ * - completeStructured: single tool whose input_schema is our JSON schema, then
+ *   parse tool_use.input, Zod validate + reprompt. `tool_choice` is `auto`, NOT
+ *   forced — see the comment at the call site.
  * - embed: NOT supported (throws) — use the OpenAI Embedder for vectors.
  */
 export class AnthropicProvider implements LLMProvider {
   readonly id = 'anthropic' as const;
   private client: Anthropic;
 
-  constructor(apiKey: string) {
-    this.client = new Anthropic({ apiKey });
+  /** `client` is for tests only — production always goes through the container,
+   *  which passes a key and nothing else. */
+  constructor(apiKey: string, client?: Anthropic) {
+    this.client = client ?? new Anthropic({ apiKey });
   }
 
   async listModels(): Promise<ModelInfo[]> {
@@ -69,7 +107,7 @@ export class AnthropicProvider implements LLMProvider {
       system: system || undefined,
       messages: rest,
       max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
-      temperature: req.temperature ?? 0.2,
+      ...tuningParams(req.model, req.temperature ?? 0.2),
     });
     const text = res.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
@@ -104,7 +142,7 @@ export class AnthropicProvider implements LLMProvider {
             system: system || undefined,
             messages,
             max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
-            temperature: req.temperature ?? 0,
+            ...tuningParams(req.model, req.temperature),
             tools: [
               {
                 name: toolName,
@@ -112,7 +150,13 @@ export class AnthropicProvider implements LLMProvider {
                 input_schema: jsonSchema.schema as Anthropic.Tool.InputSchema,
               },
             ],
-            tool_choice: { type: 'tool', name: toolName },
+            // `auto`, never `tool` or `any`. Newer models reject a forced tool
+            // choice outright — claude-opus-5-5 answers
+            //   400 tool_choice: type "tool" and "any" are not supported for this model
+            // — and since there is exactly one tool on offer and the prompt asks
+            // for it, `auto` still yields a tool_use block in practice. When it
+            // does not, structuredPayload() falls back to the text blocks.
+            tool_choice: { type: 'auto' },
           }),
           req.timeoutMs ?? DEFAULT_TIMEOUT,
         ),
@@ -120,10 +164,7 @@ export class AnthropicProvider implements LLMProvider {
       tokensIn += res.usage.input_tokens;
       tokensOut += res.usage.output_tokens;
 
-      const toolUse = res.content.find(
-        (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
-      );
-      lastRaw = toolUse ? JSON.stringify(toolUse.input) : '';
+      lastRaw = structuredPayload(res.content);
 
       const parsed = parseWithRepair(req.schema, lastRaw);
       if (parsed.ok) {
@@ -137,10 +178,26 @@ export class AnthropicProvider implements LLMProvider {
           attempts: attempt,
         };
       }
+      // Re-prompt. When the model answered with a tool_use block, the API
+      // REQUIRES the next user turn to open with a tool_result carrying that
+      // same id — a bare string earns
+      //   400 messages.N: `tool_use` ids were found without `tool_result` blocks
+      // and the retry dies instead of retrying. Plain text is correct only when
+      // the model replied in prose.
+      const toolUse = res.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
       messages.push({ role: 'assistant', content: res.content });
       messages.push({
         role: 'user',
-        content: parsed.repromptMessage,
+        content: toolUse
+          ? [
+              {
+                type: 'tool_result',
+                tool_use_id: toolUse.id,
+                content: parsed.repromptMessage,
+                is_error: true,
+              },
+            ]
+          : parsed.repromptMessage,
       });
     }
 
